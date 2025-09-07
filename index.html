@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Interval Trainer</title>
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React + ReactDOM UMD -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel (pour compiler le JSX dans le navigateur) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="react">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      // ==== Réglages (modifiables) ====
+      const DEFAULT_TOTAL_QUESTIONS = 10;
+      const DEFAULT_REQUIRED_CORRECT = 8;
+      const MODE_GOALS = {
+        premier:     { total: 6,  required: 5 },
+        progression: { total: 10, required: 8 },
+        super:       { total: 12, required: 10 },
+        champion:    { total: 14, required: 12 }
+      };
+
+      // ==== Utils musique ====
+      const A4 = 440, A4_MIDI = 69;
+      const midiToFreq = (m) => A4 * Math.pow(2, (m - A4_MIDI) / 12);
+      const NOTE_NAMES_FR = ["Do","Do♯","Ré","Ré♯","Mi","Fa","Fa♯","Sol","Sol♯","La","La♯","Si"];
+      const noteNameFR = (midi) => {
+        const pc = ((midi % 12) + 12) % 12;
+        const oct = Math.floor(midi / 12) - 1;
+        return `${NOTE_NAMES_FR[pc]}${oct}`;
+      };
+
+      // ==== Données intervalles ====
+      const INTERVALS = [
+        { id: "m2", st: 1, deg: 2, label: "2ᵉ mineure (2m)" },
+        { id: "M2", st: 2, deg: 2, label: "2ᵉ majeure (2M)" },
+        { id: "m3", st: 3, deg: 3, label: "3ᵉ mineure (3m)" },
+        { id: "M3", st: 4, deg: 3, label: "3ᵉ majeure (3M)" },
+        { id: "P4", st: 5, deg: 4, label: "4ᵉ juste (4J)" },
+        { id: "d5", st: 6, deg: 5, label: "5ᵉ diminuée (b5)" },
+        { id: "P5", st: 7, deg: 5, label: "5ᵉ juste (5J)" },
+        { id: "A5", st: 8, deg: 5, label: "5ᵉ augmentée (#5)" },
+        { id: "m6", st: 8, deg: 6, label: "6ᵉ mineure (6m)" },
+        { id: "M6", st: 9, deg: 6, label: "6ᵉ majeure (6M)" },
+        { id: "m7", st: 10, deg: 7, label: "7ᵉ mineure (7m)" },
+        { id: "M7", st: 11, deg: 7, label: "7ᵉ majeure (7M)" },
+        { id: "P8", st: 12, deg: 8, label: "Octave (8J)" }
+      ];
+      const INTERVAL_BY_ID = INTERVALS.reduce((acc, it) => { acc[it.id] = it; return acc; }, {});
+
+      // ==== Échelle ====
+      const SCALE_LABELS = [
+        { short: "F",  long: "Fondamentale / Tonique" },
+        { short: "2m", long: "Seconde mineure" },
+        { short: "2M", long: "Seconde majeure" },
+        { short: "3m", long: "Tierce mineure" },
+        { short: "3M", long: "Tierce majeure" },
+        { short: "4J", long: "Quarte juste" },
+        { short: "b5", long: "Quinte diminuée (triton)" },
+        { short: "5J", long: "Quinte juste" },
+        { short: "6m", long: "Sixte mineure" },
+        { short: "6M", long: "Sixte majeure" },
+        { short: "7m", long: "Septième mineure" },
+        { short: "7M", long: "Septième majeure" },
+        { short: "8J", long: "Octave" }
+      ];
+
+      // ==== Modes ====
+      const MODE_DEFS = {
+        premier:    { label: "Premier pas",    pool: ["M3","m3","P5"] },
+        progression:{ label: "Progression",    pool: ["M3","m3","P5","d5","A5"] },
+        super:      { label: "Oreille affûtée", pool: ["M3","m3","P5","d5","A5","m2","M2","P4"] },
+        champion:   { label: "Champion",       pool: INTERVALS.map(i=>i.id) }
+      };
+      const MODE_ENTRIES = Object.entries(MODE_DEFS);
+
+      const randOf = (arr) => arr[Math.floor(Math.random()*arr.length)];
+      const findInterval = (id) => INTERVAL_BY_ID[id] || null;
+
+      // ==== Nommage FR ====
+      const LETTERS_FR = ["Do","Ré","Mi","Fa","Sol","La","Si"];
+      const LETTERS_BASE_PC = { "Do":0, "Ré":2, "Mi":4, "Fa":5, "Sol":7, "La":9, "Si":11 };
+      const applyAccidentalFR = (letter, acc) =>
+        acc === 1 ? `${letter}♯`
+        : acc === -1 ? `${letter}♭`
+        : acc === 2 ? `${letter}𝄪`
+        : acc === -2 ? `${letter}𝄫` : letter;
+      const pcToDefaultLetter = (pc) =>
+        ({0:"Do",1:"Do",2:"Ré",3:"Ré",4:"Mi",5:"Fa",6:"Fa",7:"Sol",8:"Sol",9:"La",10:"La",11:"Si"})[((pc%12)+12)%12];
+      const spellTargetNameFR = (rootMidi, interval) => {
+        const { deg } = interval || { deg: 1, st: 0 };
+        const rootPc = ((rootMidi%12)+12)%12;
+        const rootOct = Math.floor(rootMidi/12)-1;
+        const rootLetter = pcToDefaultLetter(rootPc);
+        const rootIndex = LETTERS_FR.indexOf(rootLetter);
+        const targetLetter = LETTERS_FR[(rootIndex + (deg-1)) % 7];
+        const baseTargetPc = LETTERS_BASE_PC[targetLetter];
+        const targetMidi = rootMidi + (interval?.st ?? 0);
+        const desiredPc = ((targetMidi%12)+12)%12;
+        let diff = (desiredPc - baseTargetPc + 12) % 12;
+        if (diff > 6) diff -= 12;
+        let acc = 0;
+        if (diff === 1) acc = 1; else if (diff === -1) acc = -1; else if (diff === 2) acc = 2; else if (diff === -2) acc = -2;
+        const targetOct = Math.floor(targetMidi/12)-1;
+        return { rootName: `${applyAccidentalFR(rootLetter,0)}${rootOct}`, targetName: `${applyAccidentalFR(targetLetter, acc)}${targetOct}` };
+      };
+
+      // ==== Hook audio ====
+      function useAudio(){
+        const ctxRef = useRef(null);
+        const timeoutsRef = useRef(new Set());
+        useEffect(() => () => {
+          timeoutsRef.current.forEach(clearTimeout);
+          timeoutsRef.current.clear();
+          try{ ctxRef.current?.close?.(); }catch{}
+        }, []);
+        const ensure = async () => {
+          if (!ctxRef.current) ctxRef.current = new (window.AudioContext||window.webkitAudioContext)();
+          if (ctxRef.current.state === "suspended") await ctxRef.current.resume();
+          return ctxRef.current;
+        };
+        const schedule = (cb, ms) => { const id = setTimeout(cb, ms); timeoutsRef.current.add(id); return id; };
+        const playNote = async (midi, duration=0.5, vol=0.4) => {
+          const ctx = await ensure();
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = "sine";
+          o.frequency.value = midiToFreq(midi);
+          o.connect(g); g.connect(ctx.destination);
+          const now = ctx.currentTime;
+          g.gain.setValueAtTime(0, now);
+          g.gain.linearRampToValueAtTime(vol, now+0.01);
+          g.gain.linearRampToValueAtTime(0, now+duration);
+          o.start(); o.stop(now+duration+0.03);
+          o.onended = () => { try{ o.disconnect(); g.disconnect(); }catch{} };
+          await new Promise(r=>schedule(r, duration*1000));
+        };
+        const playChord = async (midiA, midiB, dur=0.7, vol=0.4) => {
+          const ctx = await ensure();
+          const o1 = ctx.createOscillator();
+          const o2 = ctx.createOscillator();
+          const g = ctx.createGain();
+          o1.type = o2.type = "sine";
+          o1.frequency.value = midiToFreq(midiA);
+          o2.frequency.value = midiToFreq(midiB);
+          o1.connect(g); o2.connect(g); g.connect(ctx.destination);
+          const t = ctx.currentTime;
+          g.gain.setValueAtTime(0,t);
+          g.gain.linearRampToValueAtTime(vol,t+0.01);
+          g.gain.linearRampToValueAtTime(0,t+dur);
+          o1.start(); o2.start();
+          o1.stop(t+dur+0.03); o2.stop(t+dur+0.03);
+          const cleanup=()=>{ try{o1.disconnect(); o2.disconnect(); g.disconnect();}catch{} };
+          o1.onended=cleanup; o2.onended=cleanup;
+          await new Promise(r=>schedule(r, dur*1000));
+        };
+        const ping = async () => {
+          const ctx = await ensure();
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          g.gain.value = 0.0001;
+          o.type = "sine"; o.frequency.value = 440;
+          o.connect(g); g.connect(ctx.destination);
+          o.start(); o.stop(ctx.currentTime+0.02);
+          o.onended=()=>{ try{o.disconnect(); g.disconnect();}catch{} };
+        };
+        const success = async ()=>{
+          const ctx=await ensure(); const now=ctx.currentTime;
+          const make=(f,dt)=>{
+            const o=ctx.createOscillator(); const g=ctx.createGain();
+            o.type='sine'; o.frequency.setValueAtTime(f,now+dt);
+            g.gain.setValueAtTime(0,now+dt);
+            g.gain.linearRampToValueAtTime(0.22,now+dt+0.01);
+            g.gain.linearRampToValueAtTime(0,now+dt+0.18);
+            o.connect(g); g.connect(ctx.destination);
+            o.start(now+dt); o.stop(now+dt+0.2);
+            o.onended=()=>{ try{o.disconnect(); g.disconnect();}catch{} };
+          };
+          make(880,0); make(1320,0.08);
+        };
+        return { playNote, playChord, ping, success };
+      }
+
+      // Petit alias pour icônes texte
+      const Icon = ({children}) => <span className="inline-block w-4 text-center">{children}</span>;
+
+      // ==== App ====
+      function IntervalTrainer(){
+        const audio = useAudio();
+        const [mode, setMode] = useState(null);
+        const [pool, setPool] = useState([]);
+        const [current, setCurrent] = useState(null);
+        const [userAnswer, setUserAnswer] = useState(null);
+        const [score, setScore] = useState({ ok: 0, total: 0 });
+        const [answered, setAnswered] = useState(false);
+        const [ended, setEnded] = useState(false);
+        const [badge, setBadge] = useState(null);
+        const [popup, setPopup] = useState(null);
+        const [lastSolved, setLastSolved] = useState(null);
+        const [playMode, setPlayMode] = useState("melodic");
+        const [flash, setFlash] = useState({ a: null, b: null });
+        const [lastIntervalId, setLastIntervalId] = useState(null);
+
+        const modeDef = useMemo(() => MODE_DEFS[mode] || null, [mode]);
+        const currentGoal = useMemo(() => ({
+          total: (MODE_GOALS[mode]?.total ?? DEFAULT_TOTAL_QUESTIONS),
+          required: (MODE_GOALS[mode]?.required ?? DEFAULT_REQUIRED_CORRECT)
+        }), [mode]);
+        const poolIntervals = useMemo(
+          () => (Array.isArray(pool) ? INTERVALS.filter((i) => pool.includes(i.id)) : []),
+          [pool]
+        );
+        const goodIdx = lastSolved ? (lastSolved.st % 12) : null;
+
+        useEffect(() => {
+          if (!mode) return;
+          if (!modeDef) { setMode(null); return; }
+          setPool(modeDef.pool||[]);
+          setScore({ok:0,total:0});
+          setCurrent(null);
+          setUserAnswer(null);
+          setAnswered(false);
+          setEnded(false);
+          setBadge(null);
+          setLastSolved(null);
+          setPlayMode("melodic");
+          setFlash({a:null,b:null});
+          audio.ping();
+        }, [mode]);
+
+        useEffect(() => {
+          if (!mode) return;
+          if (!Array.isArray(pool) || !pool.length) return;
+          pickNew();
+        }, [pool, mode]);
+
+        const pickNew = () => {
+          if (!mode) return null;
+          const base = (Array.isArray(pool)&&pool.length)?pool:(modeDef?.pool||[]);
+          if (!base.length) return null;
+          const allowed = INTERVALS.filter(i=>base.includes(i.id));
+          if (!allowed.length) return null;
+          // Sans répétition immédiate si possible
+          let choice = randOf(allowed);
+          if (allowed.length > 1) {
+            let guard = 0;
+            while (choice.id === lastIntervalId && guard < 10) {
+              choice = randOf(allowed); guard++;
+            }
+          }
+          const root = 60;
+          const target = root + choice.st;
+          const payload = { root, target, intervalId: choice.id };
+          setCurrent(payload);
+          setLastIntervalId(choice.id);
+          setUserAnswer(null);
+          setAnswered(false);
+          setLastSolved(null);
+          setFlash({a:null,b:null});
+          return payload;
+        };
+
+        const playMelodic = async () => {
+          const q = current || pickNew();
+          if (!q || ended) return;
+          await audio.playNote(q.root,0.5,0.4);
+          await new Promise(r=>setTimeout(r,400));
+          await audio.playNote(q.target,0.5,0.4);
+        };
+        const playHarmonic = async () => {
+          const q = current || pickNew();
+          if (!q || ended) return;
+          await audio.playChord(q.root,q.target,0.75,0.4);
+        };
+        const accuracy = (s) => (s.total ? Math.round((s.ok / s.total) * 100) : 0);
+
+        const canValidate = !!current && !!userAnswer && !answered && !ended;
+        const canNext = answered && !ended;
+
+        const check = () => {
+          if (!canValidate) return;
+          const ok = userAnswer === current.intervalId;
+          const next = { ok: score.ok + (ok?1:0), total: score.total + 1 };
+          setScore(next);
+          setAnswered(true);
+          const it = findInterval(current.intervalId) || { st:0,deg:null,label:"" };
+          const spelled = spellTargetNameFR(current.root, it);
+          setLastSolved({
+            root: current.root,
+            target: current.target,
+            rootName: spelled.rootName,
+            targetName: spelled.targetName,
+            st: it.st, deg: it.deg,
+            label: it.label,
+            correct: ok
+          });
+          if (ok) {
+            audio.success();
+            setPopup("Bonne réponse !");
+            setTimeout(()=>setPopup(null),900);
+          }
+          const totalGoal = currentGoal.total||0;
+          if (totalGoal>0 && next.total>=totalGoal){
+            const pct = accuracy(next);
+            setEnded(true);
+            if (next.ok >= (currentGoal.required||0)) {
+              setBadge({mode, ok:next.ok, total:next.total, pct});
+            }
+          }
+        };
+
+        const audition = async (i) => {
+          if (!current || ended) return;
+          if (playMode === "harmonic") {
+            setFlash({a:0,b:i});
+            await audio.playChord(current.root, current.root+i, 0.75, 0.4);
+            setTimeout(()=>setFlash({a:null,b:null}),500);
+          } else {
+            setFlash({a:0,b:null});
+            await audio.playNote(current.root,0.45,0.38);
+            setFlash({a:0,b:i});
+            await new Promise(r=>setTimeout(r,40));
+            await audio.playNote(current.root+i,0.55,0.4);
+            setTimeout(()=>setFlash({a:null,b:null}),500);
+          }
+        };
+
+        if (!mode) {
+          return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+              <div className="max-w-md w-full bg-white/80 backdrop-blur shadow-lg rounded-2xl p-8 text-center space-y-6 border border-slate-200">
+                <h1 className="text-3xl font-semibold text-slate-900">Entraînement aux intervalles</h1>
+                <p className="text-slate-600">Choisissez un mode pour commencer</p>
+                <div className="grid gap-3">
+                  {MODE_ENTRIES.map(([id, def]) => (
+                    <button key={id} onClick={() => setMode(id)}
+                      className="px-5 py-3 rounded-2xl bg-emerald-600 text-white font-semibold shadow hover:shadow-md hover:-translate-y-[1px] active:translate-y-[0px] transition flex items-center justify-center gap-2">
+                      <Icon>▶</Icon> {def.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
+            <div className="max-w-2xl mx-auto grid gap-6">
+              <header className="flex items-center justify-between">
+                <h1 className="text-2xl font-semibold text-slate-900">Mode: {modeDef?.label ?? "—"}</h1>
+                <button onClick={() => setMode(null)} className="px-3 py-2 rounded-xl bg-slate-900 text-white hover:-translate-y-[1px] hover:shadow-md transition flex items-center gap-2">
+                  <span className="w-4 text-center">≡</span> Menu
+                </button>
+              </header>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Exercice</div>
+                    <div className="text-xl font-semibold">Reconnaissance d'intervalles</div>
+                  </div>
+                  <div className="text-right text-xs text-slate-500">Score<br/><span className="text-base font-semibold text-slate-900">{score.ok}/{score.total}</span> · {accuracy(score)}%</div>
+                </div>
+
+                <div className="flex items-center gap-2 mb-3">
+                  <button onClick={playMelodic} disabled={ended}
+                          className="px-4 py-2 rounded-xl text-white bg-emerald-600 hover:bg-emerald-700 hover:-translate-y-[1px] transition flex items-center gap-2">
+                    <span className="w-4 text-center">♫</span> Écouter mélodie
+                  </button>
+                  <button onClick={playHarmonic} disabled={ended}
+                          className="px-4 py-2 rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 hover:-translate-y-[1px] transition flex items-center gap-2">
+                    <span className="w-4 text-center">≈</span> Écouter harmonisé
+                  </button>
+                  <button onClick={() => { if (!canValidate) return; check(); }}
+                          disabled={!canValidate}
+                          aria-disabled={!canValidate}
+                          className="px-4 py-2 rounded-xl text-white bg-emerald-700 hover:bg-emerald-800 hover:-translate-y-[1px] transition flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:-translate-y-0 disabled:pointer-events-none">
+                    <span className="w-4 text-center">✓</span> Valider
+                  </button>
+                  <button onClick={() => { if (!canNext) return; pickNew(); }}
+                          disabled={!canNext}
+                          aria-disabled={!canNext}
+                          className="ml-auto px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 hover:-translate-y-[1px] transition flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:-translate-y-0 disabled:pointer-events-none">
+                    <span className="w-4 text-center">⏭</span> Suivant
+                  </button>
+                </div>
+
+                {!userAnswer && !ended && (
+                  <div className="text-xs text-slate-500 mb-2">Sélectionne un intervalle pour activer « Valider ».</div>
+                )}
+                {userAnswer && !answered && !ended && (
+                  <div className="text-xs text-slate-500 mb-2">Clique « Valider » pour activer « Suivant ».</div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="col-span-2 text-xs text-slate-500 mb-1">
+                    Choisissez un intervalle puis cliquez <span className="font-medium text-slate-700">Valider</span>.
+                  </div>
+                  {poolIntervals.map((it) => (
+                    <div key={it.id} role="button" tabIndex={0}
+                         onClick={() => !ended && setUserAnswer(it.id)}
+                         onKeyDown={(e)=>{ if(!ended && (e.key==='Enter'||e.key===' ')) setUserAnswer(it.id); }}
+                         className={`rounded-2xl border p-3 text-sm select-none transition hover:-translate-y-[1px] hover:shadow ${userAnswer===it.id ? "bg-slate-900 text-white border-slate-900" : "bg-white border-slate-200"} ${!ended ? "cursor-pointer" : "opacity-50 cursor-not-allowed"}`}>
+                      {INTERVAL_BY_ID[it.id].label}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Bloc échelle: présent en permanence (stabilise la mise en page) */}
+                <div className="mt-4">
+                  <div className={`p-3 rounded-2xl border border-slate-200 bg-slate-50 transition-opacity duration-200 ${lastSolved ? '' : 'opacity-0 pointer-events-none select-none'}`} aria-hidden={!lastSolved}>
+                    <div className="text-sm mb-2 flex items-center justify-between">
+                      <span>
+                        {lastSolved ? (
+                          <>
+                            {lastSolved.correct ? '✅ Bonne réponse' : '❌ Réponse fausse'} · {lastSolved.rootName} → {lastSolved.targetName} · {lastSolved.label}{lastSolved.deg ? ` · Degré ${lastSolved.deg}` : ''}
+                          </>
+                        ) : ('')}
+                      </span>
+                      <div className="flex items-center gap-1 text-xs bg-slate-100 rounded-xl p-1">
+                        <button onClick={()=>setPlayMode('melodic')} className={`px-2 py-1 rounded-lg ${playMode==='melodic' ? 'bg-white shadow border' : ''}`}>Mélodie</button>
+                        <button onClick={()=>setPlayMode('harmonic')} className={`px-2 py-1 rounded-lg ${playMode==='harmonic' ? 'bg-white shadow border' : ''}`}>Harmonie</button>
+                      </div>
+                    </div>
+
+                    <div className="mt-1">
+                      <div className="flex gap-1 flex-nowrap overflow-x-auto whitespace-nowrap">
+                        {Array.from({ length: 13 }, (_, i) => {
+                          const isRoot = i === 0;
+                          const isGood = goodIdx !== null && i === goodIdx;
+                          const isFlash = (flash.a === i) || (flash.b === i);
+                          const base = isRoot
+                            ? "bg-slate-900 text-white border-slate-900"
+                            : isGood
+                              ? "bg-emerald-500 text-white border-emerald-500"
+                              : "bg-white border-slate-200 hover:bg-slate-100";
+                          const ring = isFlash ? " ring-2 ring-indigo-500" : "";
+                          const label = SCALE_LABELS[i]?.short ?? (i===12? '8J' : String(i));
+                          const long = SCALE_LABELS[i]?.long ?? `+${i} demi-ton(s)`;
+                          return (
+                            <button key={i}
+                              onClick={() => audition(i)}
+                              title={`${long}`}
+                              aria-label={`${long}`}
+                              className={`h-9 min-w-[3rem] px-2 flex items-center justify-center text-[11px] rounded-lg border transition active:scale-95 shrink-0 ${base}${ring}`}>{label}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {popup && (
+                <div className="fixed inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="bg-white border border-slate-300 shadow-xl px-6 py-4 rounded-2xl text-lg font-medium">{popup}</div>
+                </div>
+              )}
+
+              {ended && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4">
+                  <div className="bg-white rounded-2xl p-6 max-w-md w-full text-center shadow-xl border border-slate-200">
+                    <div className="text-2xl font-semibold mb-2">Partie terminée</div>
+                    <div className="text-sm opacity-70 mb-3">{score.ok}/{score.total} · {accuracy(score)}%</div>
+                    <div className="grid gap-3">
+                      <button onClick={() => { setEnded(false); setScore({ok:0,total:0}); setBadge(null); setLastSolved(null); pickNew(); }} className="px-4 py-2 rounded-xl bg-slate-900 text-white">Rejouer</button>
+                      <button onClick={() => setMode(null)} className="px-4 py-2 rounded-xl bg-slate-100">Retour menu</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {badge && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4">
+                  <div className="bg-white rounded-2xl p-6 max-w-md w-full text-center shadow-xl border border-slate-200">
+                    <div className="text-2xl font-semibold mb-2">🎖️ Badge débloqué</div>
+                    <div className="mb-1">Mode {MODE_DEFS[badge.mode]?.label ?? "—"} réussi</div>
+                    <div className="text-sm opacity-70 mb-3">Score: {badge.ok}/{badge.total} · {badge.pct}%</div>
+                    <div className="text-sm mb-3">Prenez une photo de ce badge et envoyez-la via WhatsApp pour valider l’exercice.</div>
+                    <button onClick={() => setBadge(null)} className="px-4 py-2 rounded-2xl bg-slate-900 text-white">J’ai envoyé sur WhatsApp</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      function App(){ return <IntervalTrainer/>; }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
